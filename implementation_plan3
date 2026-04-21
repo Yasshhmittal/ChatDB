@@ -1,0 +1,15 @@
+# Free Hosting Deployment Plan — ChatDB (Approved)
+
+## Strategy
+- **Backend** → **Render.com** free tier (Docker, Python/FastAPI)
+- **Frontend** → **Vercel** free tier (React/Vite, global CDN)
+- **Anti-sleep** → **UptimeRobot** pings `/api/health` every 5 min → no cold starts
+- **Cost** → $0/month
+
+## Execution Steps
+1. Prepare deployment files (gitignore, render.yaml, vercel.json, Dockerfile updates)
+2. Initialize Git repo & push to GitHub
+3. Guide user through Render deployment
+4. Guide user through Vercel deployment
+5. Set up UptimeRobot to keep backend alive
+6. Verify end-to-end

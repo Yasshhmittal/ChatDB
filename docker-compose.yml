@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    env_file:
+      - ./backend/.env
+    environment:
+      - FRONTEND_URL=http://localhost:5173,http://localhost
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # VITE_API_URL must be available at build time for React/Vite
+        - VITE_API_URL=http://localhost:8000/api
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

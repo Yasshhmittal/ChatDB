@@ -1,0 +1,47 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# ===== Node =====
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ===== Environment =====
+.env
+!.env.example
+
+# ===== Data (user uploads, SQLite DBs) =====
+backend/data/*.db
+backend/uploads/*
+!backend/uploads/.gitkeep
+!backend/data/.gitkeep
+data/
+uploads/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# ===== Logs =====
+logs/
+*.log
+npm-debug.log*
+
+# ===== Misc =====
+*.local
+.gemini/

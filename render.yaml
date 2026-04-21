@@ -1,0 +1,32 @@
+# Render Blueprint — auto-configures deployment from GitHub
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: chatdb-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false  # Must be set manually in Render dashboard
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: OLLAMA_MODEL
+        value: llama3.2
+      - key: DATA_DIR
+        value: /app/data
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "50"
+      - key: MAX_RESULT_ROWS
+        value: "1000"
+      - key: QUERY_TIMEOUT_SECONDS
+        value: "5"
+      - key: MAX_RETRY_ATTEMPTS
+        value: "3"
+      - key: FRONTEND_URL
+        sync: false  # Set after Vercel deploy (e.g., https://chatdb.vercel.app)
+    healthCheckPath: /api/health

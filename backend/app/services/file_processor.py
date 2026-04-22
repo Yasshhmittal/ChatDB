@@ -8,14 +8,14 @@ SQL: Filters dangerous statements, executes only CREATE TABLE + INSERT.
 
 import re
 import uuid
-import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
 import sqlalchemy
 
 from app.config import settings
-from app.utils.database import get_write_connection, get_db_path, get_db_schema
+from app.utils.database import get_write_connection, get_db_schema
 
 
 # SQL statements we allow from uploaded .sql files
@@ -213,7 +213,7 @@ async def process_sql(file_content: bytes, filename: str, session_id: str | None
             for stmt in safe_statements:
                 try:
                     conn.execute(stmt)
-                except sqlite3.Error as e:
+                except psycopg2.Error as e:
                     # Log but don't fail entire upload for one bad statement
                     print(f"[WARN] Skipping statement due to error: {e}")
                     continue

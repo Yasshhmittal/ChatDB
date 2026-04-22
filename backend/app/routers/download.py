@@ -10,42 +10,25 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
-from app.utils.database import get_db_path, get_modified_db_path, db_exists, has_modified_db
+from app.utils.database import db_exists, has_modified_db, get_db_schema, get_modified_db_schema
+from app.config import settings
 
 router = APIRouter()
 
 
 @router.get("/download/{session_id}/original")
 async def download_original(session_id: str):
-    """Download the original (unmodified) database file as .db."""
-    if not db_exists(session_id):
-        raise HTTPException(status_code=404, detail="Session not found.")
-
-    db_path = get_db_path(session_id)
-    return FileResponse(
-        path=str(db_path),
-        filename=f"{session_id}_original.db",
-        media_type="application/x-sqlite3",
+    raise HTTPException(
+        status_code=501, 
+        detail="SQLite (.db) downloads are disabled in the Cloud PostgreSQL architecture. Please use the CSV download option instead."
     )
 
 
 @router.get("/download/{session_id}/modified")
 async def download_modified(session_id: str):
-    """Download the modified (copy) database file as .db."""
-    if not db_exists(session_id):
-        raise HTTPException(status_code=404, detail="Session not found.")
-
-    if not has_modified_db(session_id):
-        raise HTTPException(
-            status_code=404,
-            detail="No modified database found. Run a write query first (INSERT, UPDATE, DELETE, etc.).",
-        )
-
-    db_path = get_modified_db_path(session_id)
-    return FileResponse(
-        path=str(db_path),
-        filename=f"{session_id}_modified.db",
-        media_type="application/x-sqlite3",
+    raise HTTPException(
+        status_code=501, 
+        detail="SQLite (.db) downloads are disabled in the Cloud PostgreSQL architecture. Please use the CSV download option instead."
     )
 
 
@@ -66,28 +49,33 @@ async def download_csv(session_id: str, db_type: str):
                 status_code=404,
                 detail="No modified database found.",
             )
-        db_path = get_modified_db_path(session_id)
+        db_schema = get_modified_db_schema(session_id)
         filename_prefix = f"{session_id}_modified"
     elif db_type == "original":
-        db_path = get_db_path(session_id)
+        db_schema = get_db_schema(session_id)
         filename_prefix = f"{session_id}_original"
     else:
         raise HTTPException(status_code=400, detail="Invalid db_type. Must be 'original' or 'modified'.")
 
     # Connect to DB and get tables
-    with sqlite3.connect(str(db_path)) as conn:
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-        tables = [row[0] for row in cursor.fetchall()]
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    with psycopg2.connect(settings.DATABASE_URL, cursor_factory=RealDictCursor) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s", (db_schema,))
+        tables = [row["table_name"] for row in cursor.fetchall()]
 
         if not tables:
             raise HTTPException(status_code=404, detail="No tables found in database.")
 
         if len(tables) == 1:
-            # Single table -> Return just one CSV
             table_name = tables[0]
-            df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
+            # Set schema path explicitly
+            cursor.execute(f"SET search_path TO {db_schema}")
+            cursor.execute(f'SELECT * FROM "{table_name}"')
+            columns = [desc[0] for desc in cursor.description]
+            df = pd.DataFrame([dict(r) for r in cursor.fetchall()], columns=columns)
             
-            # Write to BytesIO
             stream = io.StringIO()
             df.to_csv(stream, index=False)
             response = iter([stream.getvalue()])
@@ -98,11 +86,13 @@ async def download_csv(session_id: str, db_type: str):
                 headers={"Content-Disposition": f'attachment; filename="{table_name}_{filename_prefix}.csv"'}
             )
         else:
-            # Multiple tables -> Return a ZIP file of CSVs
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                cursor.execute(f"SET search_path TO {db_schema}")
                 for table_name in tables:
-                    df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
+                    cursor.execute(f'SELECT * FROM "{table_name}"')
+                    columns = [desc[0] for desc in cursor.description]
+                    df = pd.DataFrame([dict(r) for r in cursor.fetchall()], columns=columns)
                     csv_string = df.to_csv(index=False)
                     zip_file.writestr(f"{table_name}.csv", csv_string.encode("utf-8"))
             

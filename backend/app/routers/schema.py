@@ -56,17 +56,13 @@ async def get_sample_data(session_id: str, table_name: str):
         )
 
     # Get sample rows
-    import sqlite3
-    from app.utils.database import get_db_path
-
-    db_path = get_db_path(session_id)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cursor = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 10')
-        columns = [desc[0] for desc in cursor.description]
-        rows = [list(row) for row in cursor.fetchall()]
-    finally:
-        conn.close()
+    from app.utils.database import get_read_connection
+    
+    with get_read_connection(session_id) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT * FROM "{table_name}" LIMIT 10')
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = [list(row.values()) if isinstance(row, dict) else list(row) for row in cursor.fetchall()]
 
     return SampleDataResponse(
         table=table_name,

@@ -18,39 +18,34 @@ def extract_schema(session_id: str) -> list[dict]:
     - row_count: number of rows
     - sample_rows: first 3 rows as list of dicts
     """
-    db_path = get_db_path(session_id)
-    if not db_path.exists():
-        raise FileNotFoundError(f"No database for session: {session_id}")
+    from app.utils.database import get_read_connection
+    from psycopg2.extras import RealDictCursor
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        # Get all user tables
-        tables_cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        )
-        table_names = [row["name"] for row in tables_cursor.fetchall()]
+    with get_read_connection(session_id) as conn:
+        tables_cursor = conn.cursor()
+        tables_cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()")
+        table_names = [row["table_name"] for row in tables_cursor.fetchall()]
 
         schema = []
         for table_name in table_names:
-            # Column info
-            col_cursor = conn.execute(f'PRAGMA table_info("{table_name}")')
+            col_cursor = conn.cursor()
+            col_cursor.execute(
+                "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = %s",
+                (table_name,)
+            )
             columns = [
-                {"name": row["name"], "dtype": row["type"] or "TEXT"}
+                {"name": row["column_name"], "dtype": row["data_type"]}
                 for row in col_cursor.fetchall()
             ]
 
-            # Row count
-            count = conn.execute(
-                f'SELECT COUNT(*) as cnt FROM "{table_name}"'
-            ).fetchone()["cnt"]
+            count_cur = conn.cursor()
+            count_cur.execute(f'SELECT COUNT(*) as cnt FROM "{table_name}"')
+            count = count_cur.fetchone()["cnt"]
 
-            # Sample rows (3 rows for LLM context)
-            sample_cursor = conn.execute(
-                f'SELECT * FROM "{table_name}" LIMIT 3'
-            )
+            sample_cursor = conn.cursor()
+            sample_cursor.execute(f'SELECT * FROM "{table_name}" LIMIT 3')
             sample_cols = [desc[0] for desc in sample_cursor.description]
-            sample_rows = [dict(zip(sample_cols, row)) for row in sample_cursor.fetchall()]
+            sample_rows = [dict(zip(sample_cols, row.values())) if isinstance(row, dict) else dict(row) for row in sample_cursor.fetchall()]
 
             schema.append({
                 "name": table_name,
@@ -60,8 +55,6 @@ def extract_schema(session_id: str) -> list[dict]:
             })
 
         return schema
-    finally:
-        conn.close()
 
 
 def format_schema_for_llm(tables: list[dict], include_samples: bool = True) -> str:
@@ -99,15 +92,11 @@ def format_schema_for_llm(tables: list[dict], include_samples: bool = True) -> s
 
 def get_table_names(session_id: str) -> list[str]:
     """Get just the table names for a session."""
-    db_path = get_db_path(session_id)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        )
-        return [row[0] for row in cursor.fetchall()]
-    finally:
-        conn.close()
+    from app.utils.database import get_read_connection
+    with get_read_connection(session_id) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()")
+        return [row["table_name"] for row in cursor.fetchall()]
 
 
 def get_table_descriptions(session_id: str) -> dict[str, str]:

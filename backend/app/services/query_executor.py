@@ -11,7 +11,7 @@ Supports:
 
 from __future__ import annotations
 
-import sqlite3
+import psycopg2
 
 from app.config import settings
 from app.utils.database import get_read_connection, get_readwrite_connection
@@ -133,13 +133,13 @@ async def execute_with_retry(
                     "query_type": query_type,
                     "affected_rows": 0,
                 }
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             last_error = str(e)
             if attempt < max_retries:
                 # Send error back to LLM for correction
                 error_context = (
                     f"Query: {current_sql}\n"
-                    f"SQLite Error: {last_error}"
+                    f"PostgreSQL Error: {last_error}"
                 )
                 result = await llm_service.generate_sql(
                     schema_tables=schema_tables,
@@ -182,16 +182,12 @@ def _execute_select(session_id: str, sql: str) -> tuple[list[dict], list[str]]:
         (list_of_row_dicts, column_names)
     """
     with get_read_connection(session_id) as conn:
-        cursor = conn.execute(sql)
-
-        # Get column names
+        cursor = conn.cursor()
+        cursor.execute(sql)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
-
-        # Fetch with row limit
         rows = cursor.fetchmany(settings.MAX_RESULT_ROWS)
-
-        # Convert to list of dicts
-        results = [dict(zip(columns, row)) for row in rows]
+        # Convert RealDictRows to normal dicts
+        results = [dict(row) for row in rows]
 
     return results, columns
 
@@ -204,5 +200,6 @@ def _execute_write(session_id: str, sql: str) -> int:
         Number of affected rows (for DML). 0 for DDL.
     """
     with get_readwrite_connection(session_id) as conn:
-        cursor = conn.execute(sql)
+        cursor = conn.cursor()
+        cursor.execute(sql)
         return cursor.rowcount if cursor.rowcount >= 0 else 0

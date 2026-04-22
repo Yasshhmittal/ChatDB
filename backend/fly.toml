@@ -1,0 +1,38 @@
+# fly.toml app configuration file generated for ChatDB
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = "chatdb-backend-yashm"
+primary_region = "iad"
+
+# Adds 1GB of SSD Swap memory to prevent PyTorch and Pandas Out-Of-Memory (OOM) crashes
+swap_size_mb = 1024
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  DATA_DIR = "/data/db"
+  UPLOAD_DIR = "/data/uploads"
+  GROQ_MODEL = "llama-3.3-70b-versatile"
+  OLLAMA_MODEL = "llama3.2"
+  MAX_UPLOAD_SIZE_MB = "50"
+  MAX_RESULT_ROWS = "1000"
+  QUERY_TIMEOUT_SECONDS = "5"
+  MAX_RETRY_ATTEMPTS = "3"
+  # GROQ_API_KEY and FRONTEND_URL must be set as secrets via:
+  # fly secrets set GROQ_API_KEY=your_key FRONTEND_URL=your_url
+
+[mounts]
+  source = "chatdb_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]

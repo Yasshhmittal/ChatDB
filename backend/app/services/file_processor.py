@@ -12,9 +12,10 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import sqlalchemy
 
 from app.config import settings
-from app.utils.database import get_write_connection, get_db_path
+from app.utils.database import get_write_connection, get_db_path, get_db_schema
 
 
 # SQL statements we allow from uploaded .sql files
@@ -59,7 +60,7 @@ def sanitize_column_name(name: str) -> str:
     return name.lower() or "column"
 
 
-async def _process_dataframe(df: pd.DataFrame, filename: str, session_id: str | None = None) -> tuple[str, list[dict]]:
+def _process_dataframe(df: pd.DataFrame, filename: str, session_id: str | None = None) -> tuple[str, list[dict]]:
     """
     Process a pandas DataFrame:
     1. Sanitize column names
@@ -95,9 +96,21 @@ async def _process_dataframe(df: pd.DataFrame, filename: str, session_id: str | 
             import json
             df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, (list, dict)) else x)
 
-    # Write to SQLite
-    with get_write_connection(session_id) as conn:
-        df.to_sql(table_name, conn, if_exists="replace", index=False, chunksize=10000)
+    # Convert db URL
+    db_url = settings.DATABASE_URL
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+        
+    engine = sqlalchemy.create_engine(db_url)
+    schema = get_db_schema(session_id)
+
+    # Force create schema
+    with get_write_connection(session_id):
+        pass 
+
+    # Write to Postgres
+    with engine.begin() as sql_conn:
+        df.to_sql(table_name, sql_conn, schema=schema, if_exists="replace", index=False, chunksize=500, method="multi")
 
     # Build table info
     tables = [_get_table_info(session_id, table_name)]
@@ -107,34 +120,47 @@ async def _process_dataframe(df: pd.DataFrame, filename: str, session_id: str | 
 async def process_csv(file_content: bytes, filename: str, session_id: str | None = None) -> tuple[str, list[dict]]:
     """Process a CSV file."""
     import io
+    import asyncio
 
-    # Read CSV — handle common encodings
-    try:
-        df = pd.read_csv(io.BytesIO(file_content), encoding="utf-8")
-    except UnicodeDecodeError:
-        df = pd.read_csv(io.BytesIO(file_content), encoding="latin-1")
+    def _sync_process():
+        # Read CSV — handle common encodings
+        try:
+            df = pd.read_csv(io.BytesIO(file_content), encoding="utf-8")
+        except UnicodeDecodeError:
+            df = pd.read_csv(io.BytesIO(file_content), encoding="latin-1")
+        return _process_dataframe(df, filename, session_id)
 
-    return await _process_dataframe(df, filename, session_id)
+    return await asyncio.to_thread(_sync_process)
 
 
 async def process_excel(file_content: bytes, filename: str, session_id: str | None = None) -> tuple[str, list[dict]]:
     """Process an Excel file."""
     import io
-    try:
-        df = pd.read_excel(io.BytesIO(file_content))
-    except Exception as e:
-        raise ValueError(f"Failed to parse Excel file: {e}")
-    return await _process_dataframe(df, filename, session_id)
+    import asyncio
+
+    def _sync_process():
+        try:
+            df = pd.read_excel(io.BytesIO(file_content))
+        except Exception as e:
+            raise ValueError(f"Failed to parse Excel file: {e}")
+        return _process_dataframe(df, filename, session_id)
+
+    return await asyncio.to_thread(_sync_process)
 
 
 async def process_json(file_content: bytes, filename: str, session_id: str | None = None) -> tuple[str, list[dict]]:
     """Process a JSON file."""
     import io
-    try:
-        df = pd.read_json(io.BytesIO(file_content))
-    except Exception as e:
-        raise ValueError(f"Failed to parse JSON file: {e}")
-    return await _process_dataframe(df, filename, session_id)
+    import asyncio
+
+    def _sync_process():
+        try:
+            df = pd.read_json(io.BytesIO(file_content))
+        except Exception as e:
+            raise ValueError(f"Failed to parse JSON file: {e}")
+        return _process_dataframe(df, filename, session_id)
+
+    return await asyncio.to_thread(_sync_process)
 
 
 async def process_sql(file_content: bytes, filename: str, session_id: str | None = None) -> tuple[str, list[dict]]:
@@ -179,28 +205,29 @@ async def process_sql(file_content: bytes, filename: str, session_id: str | None
             "SQL file contains no safe CREATE TABLE or INSERT statements."
         )
 
-    # Execute safe statements
-    with get_write_connection(session_id) as conn:
-        for stmt in safe_statements:
-            try:
-                conn.execute(stmt)
-            except sqlite3.Error as e:
-                # Log but don't fail entire upload for one bad statement
-                print(f"[WARN] Skipping statement due to error: {e}")
-                continue
-        conn.commit()
+    import asyncio
 
-    # Get all created tables
-    tables = _get_all_tables_info(session_id)
+    def _sync_execute():
+        # Execute safe statements
+        with get_write_connection(session_id) as conn:
+            for stmt in safe_statements:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.Error as e:
+                    # Log but don't fail entire upload for one bad statement
+                    print(f"[WARN] Skipping statement due to error: {e}")
+                    continue
+            conn.commit()
 
-    if not tables:
-        # Cleanup empty database
-        db_path = get_db_path(session_id)
-        if db_path.exists():
-            db_path.unlink()
-        raise ValueError("No tables were created from the SQL file.")
+        # Get all created tables
+        tables = _get_all_tables_info(session_id)
 
-    return session_id, tables
+        if not tables:
+            raise ValueError("No tables were created from the SQL file.")
+
+        return session_id, tables
+
+    return await asyncio.to_thread(_sync_execute)
 
 
 def _mysql_to_sqlite(sql: str) -> str:
@@ -254,17 +281,20 @@ def _mysql_to_sqlite(sql: str) -> str:
 
 def _get_table_info(session_id: str, table_name: str) -> dict:
     """Get column info and row count for a single table."""
-    db_path = get_db_path(session_id)
-    conn = sqlite3.connect(str(db_path))
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    conn = psycopg2.connect(settings.DATABASE_URL, cursor_factory=RealDictCursor)
     try:
-        cursor = conn.execute(f'PRAGMA table_info("{table_name}")')
-        columns = [
-            {"name": row[1], "dtype": row[2] or "TEXT"}
-            for row in cursor.fetchall()
-        ]
-        row_count = conn.execute(
-            f'SELECT COUNT(*) FROM "{table_name}"'
-        ).fetchone()[0]
+        schema = get_db_schema(session_id)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
+            (schema, table_name)
+        )
+        columns = [{"name": row["column_name"], "dtype": row["data_type"]} for row in cur.fetchall()]
+        
+        cur.execute(f'SELECT COUNT(*) FROM {schema}."{table_name}"')
+        row_count = cur.fetchone()['count']
         return {
             "name": table_name,
             "columns": columns,
@@ -273,16 +303,19 @@ def _get_table_info(session_id: str, table_name: str) -> dict:
     finally:
         conn.close()
 
-
 def _get_all_tables_info(session_id: str) -> list[dict]:
     """Get info for all tables in a session's database."""
-    db_path = get_db_path(session_id)
-    conn = sqlite3.connect(str(db_path))
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    conn = psycopg2.connect(settings.DATABASE_URL, cursor_factory=RealDictCursor)
     try:
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        schema = get_db_schema(session_id)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+            (schema,)
         )
-        table_names = [row[0] for row in cursor.fetchall()]
+        table_names = [row["table_name"] for row in cur.fetchall()]
     finally:
         conn.close()
 

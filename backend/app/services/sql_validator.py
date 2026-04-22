@@ -121,13 +121,16 @@ def validate_sql(sql: str, session_id: str) -> str:
 
         if valid_tables:  # only check if we can get table names
             referenced = _extract_table_names(sql)
-            # Filter out SQLite internal names and aliases
+            # Filter out internal Postgres schemas
             invalid_tables = {
                 t for t in referenced
                 if t.lower() not in {v.lower() for v in valid_tables}
-                and t.lower() not in {"sqlite_master", "sqlite_temp_master"}
+                and not t.lower().startswith("information_schema")
+                and not t.lower().startswith("pg_")
                 and not t.startswith("(")  # skip subqueries
             }
+            if any("public." in t.lower() for t in referenced):
+                raise UnsafeQueryError("Querying the public system schema is strictly prohibited.")
             if invalid_tables:
                 raise UnsafeQueryError(
                     f"Query references tables that don't exist: {', '.join(invalid_tables)}. "

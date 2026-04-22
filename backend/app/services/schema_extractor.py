@@ -4,8 +4,6 @@ Extracts full database schema metadata for LLM prompting.
 Formats schema as structured text that LLMs understand well.
 """
 
-import sqlite3
-from app.utils.database import get_db_path
 
 
 def extract_schema(session_id: str) -> list[dict]:

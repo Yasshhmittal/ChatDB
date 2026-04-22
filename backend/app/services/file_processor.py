@@ -210,13 +210,14 @@ async def process_sql(file_content: bytes, filename: str, session_id: str | None
     def _sync_execute():
         # Execute safe statements
         with get_write_connection(session_id) as conn:
-            for stmt in safe_statements:
-                try:
-                    conn.execute(stmt)
-                except psycopg2.Error as e:
-                    # Log but don't fail entire upload for one bad statement
-                    print(f"[WARN] Skipping statement due to error: {e}")
-                    continue
+            with conn.cursor() as cur:
+                for stmt in safe_statements:
+                    try:
+                        cur.execute(stmt)
+                    except psycopg2.Error as e:
+                        # Log but don't fail entire upload for one bad statement
+                        print(f"[WARN] Skipping statement due to error: {e}")
+                        continue
             conn.commit()
 
         # Get all created tables

@@ -3,6 +3,7 @@ Chat Router — Natural language to SQL query endpoint.
 Orchestrates: RAG filter → LLM → Validator → Executor → Chart → Response
 """
 
+import time
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.models import ChatRequest, ChatResponse, ChartConfig
@@ -12,7 +13,7 @@ from app.services.llm_service import llm_service
 from app.services.query_executor import execute_with_retry
 from app.services.chart_service import detect_chart
 from app.routers.auth import get_current_user_or_none
-from app.auth_db import increment_guest_query
+from app.auth_db import increment_guest_query, log_query, update_last_active, touch_user_session
 
 
 router = APIRouter()
@@ -30,6 +31,9 @@ async def chat(request: ChatRequest, current_user: dict | None = Depends(get_cur
     4. Detect chart type (rule-based, no LLM) — only for SELECT
     5. Return everything: SQL, results, explanation, chart
     """
+    # ── Track execution time ──
+    start_time = time.time()
+
     # ── Validate session ──
     if not db_exists(request.session_id):
         raise HTTPException(
@@ -38,7 +42,11 @@ async def chat(request: ChatRequest, current_user: dict | None = Depends(get_cur
         )
 
     # ── Rate Limit Check ──
-    if not current_user:
+    user_id = None
+    if current_user:
+        user_id = int(current_user["id"])
+        update_last_active(user_id)
+    else:
         count = increment_guest_query(request.session_id)
         if count > 5:
             raise HTTPException(
@@ -85,6 +93,17 @@ async def chat(request: ChatRequest, current_user: dict | None = Depends(get_cur
     explanation = llm_result.get("explanation", "")
 
     if not sql_query:
+        # Log failed generation
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        log_query(
+            session_id=request.session_id,
+            question=request.question,
+            generated_sql="",
+            was_successful=False,
+            error_message="No SQL query generated",
+            execution_time_ms=elapsed_ms,
+            user_id=user_id,
+        )
         return ChatResponse(
             question=request.question,
             explanation=explanation or "I couldn't generate a SQL query for this question. Please try rephrasing.",
@@ -111,7 +130,28 @@ async def chat(request: ChatRequest, current_user: dict | None = Depends(get_cur
         if chart_data:
             chart_config = ChartConfig(**chart_data)
 
-    # ── Step 5: Build response ──
+    # ── Step 5: Log query to history ──
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    was_successful = not bool(exec_result.get("error"))
+    try:
+        log_query(
+            session_id=request.session_id,
+            question=request.question,
+            generated_sql=exec_result["sql"],
+            query_type=query_type,
+            row_count=exec_result["row_count"],
+            execution_time_ms=elapsed_ms,
+            retries_used=exec_result.get("retries_used", 0),
+            was_successful=was_successful,
+            error_message=exec_result.get("error"),
+            user_id=user_id,
+        )
+        # Touch the session's last_accessed_at
+        touch_user_session(request.session_id)
+    except Exception as e:
+        print(f"[WARN] Failed to log query: {e}")
+
+    # ── Step 6: Build response ──
     # Add assumptions to explanation if present
     full_explanation = explanation
     assumptions = llm_result.get("assumptions", "")

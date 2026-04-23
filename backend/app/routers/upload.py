@@ -4,13 +4,15 @@ Accepts .csv and .sql files, creates per-user SQLite databases.
 Supports single-file and multi-file uploads.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from typing import List
 
 from app.config import settings
 from app.models import UploadResponse, TableInfo, ColumnInfo
 from app.services.file_processor import process_csv, process_sql, process_excel, process_json, generate_session_id
 from app.services.rag_filter import build_embeddings
+from app.routers.auth import get_current_user_or_none
+from app.auth_db import log_upload, create_user_session, update_last_active
 
 router = APIRouter()
 
@@ -20,7 +22,8 @@ ALLOWED_EXTENSIONS = {".csv", ".sql", ".xlsx", ".xls", ".json"}
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: dict | None = Depends(get_current_user_or_none),
 ):
     """
     Upload a CSV or SQL file to create a queryable database.
@@ -93,6 +96,29 @@ async def upload_file(
     ]
 
     total_rows = sum(t.row_count for t in table_infos)
+
+    # ── Log upload & create session link ──
+    user_id = int(current_user["id"]) if current_user else None
+    try:
+        log_upload(
+            session_id=session_id,
+            file_name=file.filename,
+            file_type=ext.lstrip("."),
+            file_size_bytes=len(content),
+            table_count=len(table_infos),
+            total_rows=total_rows,
+            user_id=user_id,
+        )
+        create_user_session(
+            session_id=session_id,
+            session_name=file.filename,
+            user_id=user_id,
+        )
+        if user_id:
+            update_last_active(user_id)
+    except Exception as e:
+        print(f"[WARN] Failed to log upload: {e}")
+
     return UploadResponse(
         session_id=session_id,
         tables=table_infos,
@@ -103,7 +129,8 @@ async def upload_file(
 @router.post("/upload-multiple", response_model=UploadResponse)
 async def upload_multiple_files(
     files: List[UploadFile] = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: dict | None = Depends(get_current_user_or_none),
 ):
     """
     Upload multiple CSV/SQL files into a single queryable database.
@@ -187,6 +214,31 @@ async def upload_multiple_files(
 
     total_rows = sum(t.row_count for t in table_infos)
     file_count = len(files) - len(errors)
+
+    # ── Log uploads & create session link ──
+    user_id = int(current_user["id"]) if current_user else None
+    try:
+        for f in files:
+            if f.filename:
+                f_ext = _get_extension(f.filename).lstrip(".")
+                log_upload(
+                    session_id=session_id,
+                    file_name=f.filename,
+                    file_type=f_ext,
+                    file_size_bytes=0,
+                    table_count=0,
+                    total_rows=0,
+                    user_id=user_id,
+                )
+        create_user_session(
+            session_id=session_id,
+            session_name=f"{file_count} files",
+            user_id=user_id,
+        )
+        if user_id:
+            update_last_active(user_id)
+    except Exception as e:
+        print(f"[WARN] Failed to log multi-upload: {e}")
 
     # Build message
     msg = f"Successfully imported {len(table_infos)} table(s) from {file_count} file(s) with {total_rows} total rows."

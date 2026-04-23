@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import upload, chat, schema, auth, download
+from app.routers import upload, chat, schema, auth, download, analytics
 from app.auth_db import init_db
 
 
@@ -65,6 +65,7 @@ app.include_router(chat.router, prefix="/api", tags=["Chat"])
 app.include_router(schema.router, prefix="/api", tags=["Schema"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(download.router, prefix="/api", tags=["Download"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
 
 
 # ──────────────────────────────────────────────

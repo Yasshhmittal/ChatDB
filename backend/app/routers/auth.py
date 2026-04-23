@@ -5,7 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import bcrypt
 
-from app.auth_db import create_user, get_user_by_username
+from app.auth_db import create_user, get_user_by_username, update_last_active
 
 # -------------------------------------------------------------
 # Security & Config
@@ -114,6 +114,9 @@ async def signin(request: SigninRequest):
     
     # Create token
     access_token = create_access_token(data={"sub": str(user["id"]), "name": user["name"], "username": user["username"]})
+    
+    # Track last activity
+    update_last_active(user["id"])
     
     avatar = user["name"][0].upper()
     user_resp = UserResponse(id=user["id"], name=user["name"], username=user["username"], avatar=avatar)

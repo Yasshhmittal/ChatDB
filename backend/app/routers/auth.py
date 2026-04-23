@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import jwt
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import bcrypt
@@ -104,7 +104,7 @@ async def signup(request: SignupRequest):
     return {"access_token": access_token, "user": user_resp}
 
 @router.post("/signin", response_model=AuthResponse)
-async def signin(request: SigninRequest):
+async def signin(request: SigninRequest, background_tasks: BackgroundTasks):
     user = get_user_by_username(request.username)
     if not user or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(
@@ -115,8 +115,8 @@ async def signin(request: SigninRequest):
     # Create token
     access_token = create_access_token(data={"sub": str(user["id"]), "name": user["name"], "username": user["username"]})
     
-    # Track last activity
-    update_last_active(user["id"])
+    # Track last activity in background to avoid blocking the sign-in response
+    background_tasks.add_task(update_last_active, user["id"])
     
     avatar = user["name"][0].upper()
     user_resp = UserResponse(id=user["id"], name=user["name"], username=user["username"], avatar=avatar)

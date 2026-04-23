@@ -108,9 +108,23 @@ def _process_dataframe(df: pd.DataFrame, filename: str, session_id: str | None =
     with get_write_connection(session_id):
         pass 
 
-    # Write to Postgres
+    import io
+    
+    # Write to Postgres using ultra-fast COPY
     with engine.begin() as sql_conn:
-        df.to_sql(table_name, sql_conn, schema=schema, if_exists="replace", index=False, chunksize=500, method="multi")
+        # 1. Create table schema (write 0 rows)
+        df.head(0).to_sql(table_name, sql_conn, schema=schema, if_exists="replace", index=False)
+        
+        # 2. Serialize DataFrame to CSV in-memory
+        s_buf = io.StringIO()
+        df.to_csv(s_buf, index=False, header=False, na_rep='\\N')
+        s_buf.seek(0)
+        
+        # 3. Use psycopg2 copy_expert for raw bulk ingestion
+        dbapi_conn = sql_conn.connection.dbapi_connection
+        with dbapi_conn.cursor() as cur:
+            sql = f'COPY "{schema}"."{table_name}" FROM STDIN WITH (FORMAT CSV, NULL \'\\N\')'
+            cur.copy_expert(sql=sql, file=s_buf)
 
     # Build table info
     tables = [_get_table_info(session_id, table_name)]
